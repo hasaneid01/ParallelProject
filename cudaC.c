@@ -39,7 +39,7 @@ char* hash(char *real)
     cudaMalloc(&dev_pass, sizeof(char) * length);
 
     int block_size = 256;
-    int grid_size = (length + block_size - 1) / block_size;
+    int grid_size = (length+1) / block_size;
     hash_kernel<<<grid_size, block_size>>>(dev_real, length);
     cudaMemcpy(pass, dev_real, sizeof(char) * length, cudaMemcpyDeviceToHost);
 
