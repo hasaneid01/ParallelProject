@@ -1,127 +1,108 @@
-
-// compile using: gcc -fopenmp omp_code -o omp_code.c
-// run using: ./omp_code passwords.txt password_to_crack
+// include %%cu in case running this code on Google Colab
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <time.h>
-#include <omp.h>
+#include <cuda_runtime.h>
 
-#define MAX_PASSWORD_LENGTH 20
-#define NUM_PASSWORDS 100000
 
-char* hash(const char *real)
+#define BLOCK_SIZE 256
+__global__ void hash_kernel(char *dev_pass, int length)
 {
-    size_t len = strlen(real);
-    char *pass = malloc(len + 1);
-    for (size_t i = 0; i < len; i++)
+    __shared__ char s_pass[BLOCK_SIZE];
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int tid = threadIdx.x;
+
+    while(i < length)
     {
-        pass[i] = real[i] ^ 4;
+        s_pass[tid] = dev_pass[i];
+        __syncthreads();
+
+        s_pass[tid] ^= 4;
+        __syncthreads();
+
+        dev_pass[i] = s_pass[tid];
+        i += blockDim.x * gridDim.x;
     }
-    pass[len] = '\0'; // add null terminator
+}
+
+char* hash(char *real)
+{
+    int length = strlen(real);
+    char *dev_real, *dev_pass;
+    char *pass = (char*)malloc(sizeof(char) * length);
+
+    cudaMalloc(&dev_real, sizeof(char) * length);
+    cudaMemcpy(dev_real, real, sizeof(char) * length, cudaMemcpyHostToDevice);
+
+    cudaMalloc(&dev_pass, sizeof(char) * length);
+
+    int block_size = 256;
+    int grid_size = (length + block_size - 1) / block_size;
+    hash_kernel<<<grid_size, block_size>>>(dev_real, length);
+    cudaMemcpy(pass, dev_real, sizeof(char) * length, cudaMemcpyDeviceToHost);
+
+    pass[length] = '\0'; // add null terminator
+    cudaFree(dev_real);
+    cudaFree(dev_pass);
+
     return pass;
 }
 
-int main(int argc, char *argv[])
+int main()
 {
-    if (argc != 3)
-    {
-        printf("Usage: ./OpenMPCode passwords.txt password\n");
-        return 1;
-    }
-
     clock_t start, end;
     float time_exec;
 
     FILE *fptr, *fptw;
 
-    fptr = fopen(argv[1], "r"); // reading all passwords
-    fptw = fopen("hashed_pass.txt", "w");
-    if (fptr == NULL || fptw == NULL) {
-        printf("Failed to open files.\n");
-        return 1;
+    fptr = fopen("passwords.txt", "r"); // reading all passwords
+    fptw = fopen("hashed_pass.txt","a");
+    if (fptr == NULL) {
+        printf("Failed to open passwords file.\n");
+        return 0;
     }
+    char *p = (char*)malloc(sizeof(char)*20);
+    char *hashed_p = (char*)malloc(sizeof(char)*20); 
 
-    start = clock();
-
-    #pragma omp parallel shared(fptr, fptw)
+    while(fscanf(fptr, "%s", p) == 1)
     {
-        char p[MAX_PASSWORD_LENGTH + 1];
-        char *hashed_p;
-
-        #pragma omp for schedule(dynamic)
-        for (int i = 0; i < NUM_PASSWORDS; i++)
-        {
-            if (fscanf(fptr, "%s", p) == 1)
-            {
-                hashed_p = hash(p);
-			
-			if(hashed_p == argv[2]){
-			printf("found %s", hash(argv[2]));
-			}
-
-
-                #pragma omp critical
-                {
-                    fputs(hashed_p, fptw);
-                    fputs("\n", fptw);
-                }
-
-                free(hashed_p);
-            }
-        }
+        hashed_p = hash(p);
+        fputs(hashed_p, fptw);
+        fputs("\n", fptw);
     }
-
     fclose(fptr);
     fclose(fptw);
 
     //looking for the password
     start = clock();
-
-    char *my_pass = argv[2];
-    char *my_hashed = hash(my_pass);
-
-    fptr = fopen("hashed_pass.txt", "r");
+    char *my_pass = "Yaakoub";
+    char *my_hashed= hash(my_pass);
+    fptr = fopen("hashed_pass.txt","r");
     if (fptr == NULL) {
         printf("Failed to open hashed passwords file.\n");
-        return 1;
+        return 0;
     }
-
+    char *thispass = (char*)malloc(sizeof(char)*20);
     int found = 0;
-
-    #pragma omp parallel shared(fptr, found)
+    while(fscanf(fptr, "%s", thispass) == 1)
     {
-        char thispass[MAX_PASSWORD_LENGTH + 1];
-
-        #pragma omp for schedule(dynamic)
-        for (int i = 0; i < NUM_PASSWORDS; i++)
+        if(strcmp(my_hashed, thispass) == 0)
         {
-            if (fscanf(fptr, "%s", thispass) == 1)
-            {
-                if (strcmp(my_hashed, thispass) == 0)
-                {
-                    printf("The cracked password is %s\n", my_pass);
-                    #pragma omp atomic write
-                    found = 1;
-                    #pragma omp cancel for
-                }
-            }
+            printf("The cracked password is %s\n", my_pass);
+            found = 1;
+            break;
         }
     }
-
     fclose(fptr);
-
-    if (!found)
+    if(!found)
     {
         printf("Not Found!!\n");
     }
 
-    end = clock();
-    time_exec = ((float)(end - start)) / CLOCKS_PER_SEC;
+    end=clock();
+    time_exec = ((float)(end-start))/CLOCKS_PER_SEC;
     printf("Time of execution: %.5f\n", time_exec);
-
-    free(my_hashed);
-
     return 0;
 }
